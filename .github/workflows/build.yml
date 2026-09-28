@@ -1,8 +1,10 @@
 name: Build FriendlyWrt
 
 on:
-  watch:
-    types: started
+  # NOTE(fork): original trigger was `watch` (star the repo to run the full
+  # matrix build). Disabled here to avoid accidental multi-hour builds;
+  # run manually via "Run workflow" if a full FriendlyWrt build is needed.
+  workflow_dispatch:
 jobs:
   prepare_release:
     runs-on: ubuntu-22.04

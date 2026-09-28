@@ -1,0 +1,156 @@
+name: Build Kernel with BTF (R2S/R2C)
+
+# Kernel-only build. Produces:
+#   - kernel.img (KRNL-wrapped arm64 Image, dd target for the "kernel" partition p6)
+#   - modules-<ver>.tgz (full /lib/modules/<ver> tree, incl. FriendlyARM
+#     third-party drivers, from the same build)
+#   - vmlinux.btf (standalone BTF blob, kept as a spare)
+# with CONFIG_DEBUG_INFO_BTF / KPROBES / KPROBE_EVENTS / BPF_STREAM_PARSER
+# enabled (see scripts/custome_kernel_config.sh) for dae.
+#
+# Notes:
+#   - ./build.sh kernel already runs sd-fuse build-kernel.sh with
+#     DISABLE_MKIMG=1, so no rootfs image is needed; kernel.img is packed
+#     here with the official mkkrnlimg tool (same as the release pipeline).
+#   - Requires pahole (dwarves) on the build host for BTF generation.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'FriendlyWrt manifest version branch (e.g. 25.12)'
+        required: true
+        default: '25.12'
+      cpu:
+        description: 'CPU manifest (rk3328 = R2S/R2C series)'
+        required: true
+        default: 'rk3328'
+
+permissions:
+  contents: read
+
+jobs:
+  build_kernel:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 240
+    env:
+      SDFUSE_NONINTERACTIVE: y
+    steps:
+    - name: Checkout (fork)
+      uses: actions/checkout@v4
+
+    - name: Initialization environment
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo rm -rf /etc/apt/sources.list.d
+        wget https://raw.githubusercontent.com/friendlyarm/build-env-on-ubuntu-bionic/master/install.sh
+        sed -i -e 's/^apt-get -y install openjdk-8-jdk/# apt-get -y install openjdk-8-jdk/g' install.sh
+        sed -i -e 's/^\[ -d fa-toolchain \]/# [ -d fa-toolchain ]/g' install.sh
+        sed -i -e 's/^(cat fa-toolchain/# (cat fa-toolchain/g' install.sh
+        sed -i -e 's/^(tar xf fa-toolchain/# (tar xf fa-toolchain/g' install.sh
+        sudo -E bash ./install.sh
+        sudo apt-get update
+        sudo apt-get install -y dwarves
+        pahole --version
+        git config --global user.name 'GitHub Actions'
+        git config --global user.email 'noreply@github.com'
+        git config --global color.ui false
+        git clone https://github.com/friendlyarm/repo
+        sudo -E cp repo/repo /usr/bin/
+        mkdir -p ./artifact
+        sudo swapoff -a || true
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android/sdk /usr/local/share/boost /opt/ghc 2>/dev/null || true
+        echo "cores: $(nproc)"
+
+    - name: Download source
+      run: |
+        mkdir project
+        cd project
+        repo init --depth=1 -u https://github.com/friendlyarm/friendlywrt_manifests -b master-v${{ inputs.version }} \
+                -m ${{ inputs.cpu }}.xml --repo-url=https://github.com/friendlyarm/repo --no-clone-bundle
+        repo sync -j8 -c kernel u-boot rkbin configs device/common device/friendlyelec scripts scripts/sd-fuse toolchain --no-clone-bundle
+
+    - name: Install FriendlyARM toolchain (11.3-aarch64)
+      run: |
+        ls -l project/toolchain/gcc-x64/toolchain-11.3-aarch64.tar.xz
+        sudo tar xf project/toolchain/gcc-x64/toolchain-11.3-aarch64.tar.xz -C /
+        /opt/FriendlyARM/toolchain/11.3-aarch64/bin/aarch64-linux-gnu-gcc --version | head -1
+
+    - name: Prepare board config
+      run: |
+        cd project
+        case ${{ inputs.cpu }} in
+        rk3328)
+          MODEL=R2S-R2C-Series
+          ;;
+        *)
+          echo "unsupported cpu"; exit 1
+          ;;
+        esac
+        DIST_DIR=friendlywrt$(echo ${{ inputs.version }}|awk -F . '{print $1}')
+        CONFIG=rockchip
+        cat > .current_config.mk <<EOL
+        . device/friendlyelec/${{ inputs.cpu }}/base.mk
+        TARGET_IMAGE_DIRNAME=${DIST_DIR}
+        TARGET_FRIENDLYWRT_CONFIG=${CONFIG}
+        TARGET_SD_RAW_FILENAME=${MODEL}-FriendlyWrt-${{ inputs.version }}.img
+        EOL
+        cat .current_config.mk
+
+    - name: Apply custom kernel config (BTF / KPROBES / BPF_STREAM_PARSER)
+      run: |
+        cd project
+        source ../scripts/custome_kernel_config.sh
+        KCFG="kernel/arch/arm64/configs/$(awk '{print $1}' <<< "$TARGET_KERNEL_CONFIG")"
+        echo "== patched defconfig: ${KCFG} =="
+        grep -nE 'DEBUG_INFO|KPROBES|BPF_STREAM_PARSER' "$KCFG"
+
+    - name: Compile kernel and modules
+      run: |
+        cd project
+        ./build.sh kernel
+
+    - name: Pack artifacts and verify config
+      run: |
+        cd project
+        KVER=$(cat kernel/include/config/kernel.release)
+        {
+          echo "build date (UTC): $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "kernel release: ${KVER}"
+          echo "kernel commit: $(git -C kernel rev-parse HEAD)"
+          echo "manifests commit: $(git -C .repo/manifests rev-parse HEAD)"
+          echo "--- final .config checks ---"
+        } > ../artifact/build-info.txt
+        for PAT in '^CONFIG_DEBUG_INFO=y' '^CONFIG_DEBUG_INFO_BTF=y' '^CONFIG_KPROBES=y' \
+                   '^CONFIG_KPROBE_EVENTS=y' '^CONFIG_BPF_STREAM_PARSER=y' \
+                   '^# CONFIG_DEBUG_INFO_REDUCED is not set'; do
+          grep -E "$PAT" kernel/.config >> ../artifact/build-info.txt \
+            || { echo "CONFIG ASSERT FAILED: missing ${PAT}"; exit 1; }
+        done
+        readelf -S kernel/vmlinux | grep -qE '[.]BTF([.]ext)?' \
+          || { echo "CONFIG ASSERT FAILED: no .BTF section in vmlinux"; exit 1; }
+        echo "vmlinux .BTF section: present" >> ../artifact/build-info.txt
+        scripts/sd-fuse/tools/mkkrnlimg kernel/arch/arm64/boot/Image ../artifact/kernel.img
+        if ! objcopy --dump-section .BTF=../artifact/vmlinux.btf kernel/vmlinux 2>/dev/null; then
+          echo "note: objcopy .BTF dump skipped (non-fatal)" >> ../artifact/build-info.txt
+        fi
+        tar czf "../artifact/modules-${KVER}.tgz" -C out/output_rk3328_kmodules lib
+        {
+          echo "--- artifacts ---"
+          ls -l ../artifact/
+        } >> ../artifact/build-info.txt
+        [ -f ../artifact/vmlinux.btf ] && ls -l ../artifact/vmlinux.btf || true
+        KSIZE=$(stat -c%s ../artifact/kernel.img)
+        echo "kernel.img size: ${KSIZE} bytes (kernel partition limit: 41943040 bytes)"
+        test "${KSIZE}" -lt 41943040 || { echo "kernel.img does not fit into the p6 kernel partition"; exit 1; }
+        sha256sum ../artifact/kernel.img || true
+        [ -f "../artifact/modules-${KVER}.tgz" ] && sha256sum "../artifact/modules-${KVER}.tgz" || true
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: kernel-btf-${{ inputs.cpu }}-${{ inputs.version }}
+        path: artifact/
+        if-no-files-found: error
+        retention-days: 30
