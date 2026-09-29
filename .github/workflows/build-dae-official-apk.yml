@@ -62,6 +62,7 @@ jobs:
 
       - name: Build only dae-official with the SDK
         run: |
+          set -o pipefail
           cd "$SDK_DIR"
           make package/dae-official/compile V=s \
             2>&1 | tee "$RUNNER_TEMP/dae-official-build.log"
@@ -149,6 +150,7 @@ jobs:
 
       - name: Validate example against official OpenWrt geodata
         run: |
+          set -o pipefail
           # Signed OpenWrt 25.12.4 feed packages, used on the runner only.
           # They are NOT included in the dae-official artifact; apk installs them as dependencies.
           datasets="$RUNNER_TEMP/dae-geodata"
@@ -172,6 +174,8 @@ jobs:
             timeout 90s qemu-aarch64-static -L "$SDK_DIR/staging_dir/target-aarch64_generic_musl" \
             "$RUNNER_TEMP/dae-root/usr/bin/dae" validate -c "$example" \
             2>&1 | tee "$RUNNER_TEMP/dae-validation.log"
+          echo 'PASS: official dae validates example using OpenWrt geoip/geosite packages' \
+            | tee -a "$RUNNER_TEMP/dae-validation.log"
 
       - name: Record provenance and artifact checksums
         run: |

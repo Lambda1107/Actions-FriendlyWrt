@@ -35,7 +35,6 @@
 - OpenWrt 的通用安装钩子可能注册 `/etc/rc.d` 服务链接并调用 `start`；但 UCI 默认 `enabled=0`，init 脚本会在打开 procd 实例之前退出。实际启用还要求 root 所有、0600 的 `/etc/dae/config.dae`、有效的持久 BTF 与两份 Geo 数据，并先运行 `dae validate`。
 - 产物来自用户 fork 的 Actions，不是 OpenWrt 官方签名软件源。安装 APK 和任何路由器写操作由使用者执行；核对 Actions 产物 `SHA256SUMS`，不要用自动安装脚本绕过签名检查或自动拉取不匹配运行内核的 kmod。
 
-
 ### 更新说明
 * 2026/08/07
     *  增加 NanoPi-R28S 支持
