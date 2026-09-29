@@ -22,9 +22,19 @@
 - 成功产物为 `external-btf-szr-6.6.134-plus`，包含原始 BTF 文件 `vmlinux-6.6.134+`、原始/构建配置、来源信息、检查结果和 `SHA256SUMS`。不包含用于刷机的内核镜像或模块包。
 - 工作流用 dae v2.1.1 所用的 `cilium/ebpf v0.22.0` 解码产物并检查核心结构体字段边界，不执行任何 BPF 加载。
 
-产物未在路由器上安装或加载验证。源码提交根据固件编译时间与已有构建记录选择；配置、编译器和版本匹配不能单独证明运行时 ABI 完全一致。确认匹配并获得安装授权后，cilium 的一个外置 BTF 搜索位置是 `/usr/lib/debug/boot/vmlinux-6.6.134+`；工作流不会自动复制文件到该路径。
+外置 BTF 已在 szr 的 `6.6.134+` 内核上完成 dae v2.1.1 核心 BPF 加载，以及仅绑定隔离 veth 的 IPv4 TCP 代理路径试验；源码提交与固件镜像原始源码仍未独立核对。当前测试环境使用指向 `/tmp` 的 BTF 链接，重启即失效；正式启用开机服务前必须改为持久存放、核对哈希。工作流不会上传文件到路由器。
 
 原有 `build-kernel-btf.yml` 是更换内核用的另一套流程，会开启额外内核功能。其 BTF 不能直接当作当前未更换内核的匹配文件。
+
+### 构建官方 dae 的 OpenWrt APK
+
+在 Actions 中手动运行 **Build official dae APK (OpenWrt 25.12.4)**（`build-dae-official-apk.yml`）。目标是 NanoPi R2S 的 `rockchip/armv8`、`aarch64_generic`；它使用官方 dae v2.1.1 ARM64 静态二进制及固定哈希，在匹配版本的 OpenWrt SDK 中构建 `dae-official-2.1.1-r1` APK，不编译新的 dae 核心、内核或模块，也不连接路由器。
+
+- APK 声明依赖 OpenWrt 官方 `v2ray-geoip`、`v2ray-geosite`，从 `/usr/share/v2ray` 加载两份 `.dat`；不捆绑重复、易过期的数据文件。外置 BTF 仍需单独、持久地放在 `/usr/lib/debug/boot/vmlinux-6.6.134+`。
+- 包拥有 `/usr/bin/dae`、`/etc/init.d/dae`、`/etc/config/dae` 和 `/etc/dae/example.dae`；**不附带**可直接运行的 `/etc/dae/config.dae`，也不自动绑定任何网络接口。示例中的 LAN 绑定已注释，使用前需要检查 DNS 入口与 WireGuard 回滚路径。
+- OpenWrt 的通用安装钩子可能注册 `/etc/rc.d` 服务链接并调用 `start`；但 UCI 默认 `enabled=0`，init 脚本会在打开 procd 实例之前退出。实际启用还要求 root 所有、0600 的 `/etc/dae/config.dae`、有效的持久 BTF 与两份 Geo 数据，并先运行 `dae validate`。
+- 产物来自用户 fork 的 Actions，不是 OpenWrt 官方签名软件源。安装 APK 和任何路由器写操作由使用者执行；核对 Actions 产物 `SHA256SUMS`，不要用自动安装脚本绕过签名检查或自动拉取不匹配运行内核的 kmod。
+
 
 ### 更新说明
 * 2026/08/07

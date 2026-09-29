@@ -79,7 +79,9 @@ jobs:
           apk_tool="$SDK_DIR/staging_dir/host/bin/apk"
           "$apk_tool" adbdump --format json "${apks[0]}" \
             > "$GITHUB_WORKSPACE/artifact/package-metadata.json"
-          "$apk_tool" extract --no-chown --destination "$RUNNER_TEMP/dae-root" "${apks[0]}"
+          # Custom APK is not signed by OpenWrt. Inspect it only on this runner;
+          # its source archive and installed daemon are checked against pinned SHA256.
+          "$apk_tool" --allow-untrusted extract --no-chown --destination "$RUNNER_TEMP/dae-root" "${apks[0]}"
           python3 - "$GITHUB_WORKSPACE/artifact/package-metadata.json" "$RUNNER_TEMP/dae-root" <<'PY'
           import hashlib
           import json
@@ -160,7 +162,7 @@ jobs:
             4fba8d3638acfa190e2ee992d6be9178dd166dc5cef56e3ae80f9a9cdcf67037 "$geoip" \
             dc129f5f7e210734f0f2a58a68faa3ec219808d3c4d6b6e9eb8837f60cf0fbcb "$geosite" \
             | sha256sum --check
-          "$SDK_DIR/staging_dir/host/bin/apk" extract --no-chown --destination "$datasets" "$geoip" "$geosite"
+          "$SDK_DIR/staging_dir/host/bin/apk" --allow-untrusted extract --no-chown --destination "$datasets" "$geoip" "$geosite"
           test -s "$datasets/usr/share/v2ray/geoip.dat"
           test -s "$datasets/usr/share/v2ray/geosite.dat"
           example="$RUNNER_TEMP/dae-example.dae"
