@@ -13,6 +13,19 @@
 - 首次安装：先将 XYZ.img.gz 写入 SD 卡并启动系统，进入 FriendlyWrt 后台 → "系统" → "eMMC 刷机助手"，上传固件直接刷入（无需解压）。完成后弹出 SD 卡，设备会自动重启并从 eMMC 启动。
 - 小版本升级（如 25.12.2 → 25.12.3）：在 "eMMC 刷机助手" 中刷入 images-XXYYZZ.tgz，可选择保留数据，但兼容性需自行评估。
 - 大版本升级（如 24.10 → 25.12）：建议先[备份配置](https://openwrt.org/docs/guide-user/troubleshooting/backup_restore)，然后使用 XYZ.img.gz 全量安装，以避免兼容性问题。
+### 仅构建 szr 当前内核的外置 BTF
+
+在 Actions 中手动运行 **Build External BTF (szr 6.6.134+)**（`build-external-btf.yml`）。它面向 NanoPi R2S、FriendlyWrt 2026/06/09 的 `6.6.134+` 内核，不构建或刷写固件，也不会连接路由器。
+
+- 输入位于 `btf/szr-6.6.134+.config` 和同名 JSON：配置从运行内核导出，源码、FriendlyARM GCC 11.3/binutils 2.38、pahole 1.25 均固定版本。
+- 只关闭 `CONFIG_DEBUG_INFO_REDUCED` 以生成完整 DWARF，再用 pahole 提取独立 BTF。任何功能配置漂移都会停止构建；不会开启 KPROBES、BPF_STREAM_PARSER 或内核内置 BTF。
+- 成功产物为 `external-btf-szr-6.6.134-plus`，包含原始 BTF 文件 `vmlinux-6.6.134+`、原始/构建配置、来源信息、检查结果和 `SHA256SUMS`。不包含用于刷机的内核镜像或模块包。
+- 工作流用 dae v2.1.1 所用的 `cilium/ebpf v0.22.0` 解码产物并检查核心结构体字段边界，不执行任何 BPF 加载。
+
+产物未在路由器上安装或加载验证。源码提交根据固件编译时间与已有构建记录选择；配置、编译器和版本匹配不能单独证明运行时 ABI 完全一致。确认匹配并获得安装授权后，cilium 的一个外置 BTF 搜索位置是 `/usr/lib/debug/boot/vmlinux-6.6.134+`；工作流不会自动复制文件到该路径。
+
+原有 `build-kernel-btf.yml` 是更换内核用的另一套流程，会开启额外内核功能。其 BTF 不能直接当作当前未更换内核的匹配文件。
+
 ### 更新说明
 * 2026/08/07
     *  增加 NanoPi-R28S 支持

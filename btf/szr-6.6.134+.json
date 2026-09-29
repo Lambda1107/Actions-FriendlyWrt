@@ -1,0 +1,19 @@
+{
+  "target": "szr / FriendlyElec NanoPi R2S",
+  "firmware_release": "https://github.com/friendlyarm/Actions-FriendlyWrt/releases/tag/FriendlyWrt-2026-06-09",
+  "kernel_release": "6.6.134+",
+  "kernel_repository": "https://github.com/friendlyarm/kernel-rockchip",
+  "kernel_commit": "22d95ec20869e9a713f677156a3ba039e5034555",
+  "kernel_branch": "nanopi-r2-v6.6.y-opp1",
+  "source_selection": "Latest vendor branch commit before running kernel build timestamp; matches existing successful fork kernel build provenance. Original release did not publish a resolved source manifest.",
+  "toolchain_repository": "https://github.com/friendlyarm/prebuilts",
+  "toolchain_commit": "b156c94f1d3e90ae935819fe0a7a2910f013aded",
+  "toolchain_archive": "gcc-x64/toolchain-11.3-aarch64.tar.xz",
+  "toolchain_archive_git_blob": "5c01a4c3702d39c0ee88cb5ce23a7e310aab61d2",
+  "compiler": "aarch64-linux-gnu-gcc (ctng-1.25.0-119g-FA) 11.3.0",
+  "binutils": "2.38",
+  "pahole_version": "1.25",
+  "runtime_config_sha256": "02caafed7756644660646a58b89534712c198cd8db7774974dcb5a3387c4833d",
+  "runtime_kernel_version": "Linux version 6.6.134+ (runner@runnervmiav63) (aarch64-linux-gnu-gcc (ctng-1.25.0-119g-FA) 11.3.0, GNU ld (GNU Binutils) 2.38) #1 SMP Tue Jun 9 08:29:57 UTC 2026",
+  "router_validation": "Not installed or load-tested on router. Matching source/config/compiler is checked; this artifact does not change the running kernel."
+}

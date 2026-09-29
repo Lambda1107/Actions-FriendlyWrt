@@ -1,0 +1,130 @@
+name: Build External BTF (szr 6.6.134+)
+
+# Metadata-only shadow build for the existing FriendlyWrt kernel.
+# Never invokes the full firmware/kernel replacement workflow or contacts szr.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: external-btf-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build_external_btf:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout build configuration
+        uses: actions/checkout@v4
+
+      - name: Checkout matching FriendlyARM kernel
+        uses: actions/checkout@v4
+        with:
+          repository: friendlyarm/kernel-rockchip
+          ref: 22d95ec20869e9a713f677156a3ba039e5034555
+          path: kernel
+          persist-credentials: false
+
+      - name: Checkout pahole 1.25
+        uses: actions/checkout@v4
+        with:
+          repository: acmel/dwarves
+          ref: 81558a5a996005df0d607dd33f74ec5b7bdb619d
+          submodules: recursive
+          path: pahole-source
+          persist-credentials: false
+
+      - name: Install build dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bc bison flex cmake pkg-config \
+            libssl-dev libelf-dev libdw-dev zlib1g-dev \
+            libgmp-dev libmpc-dev python3 xz-utils
+
+      - name: Install original FriendlyARM GCC 11.3 toolchain
+        run: |
+          archive="$RUNNER_TEMP/toolchain-11.3-aarch64.tar.xz"
+          curl --fail --location --retry 3 \
+            https://raw.githubusercontent.com/friendlyarm/prebuilts/b156c94f1d3e90ae935819fe0a7a2910f013aded/gcc-x64/toolchain-11.3-aarch64.tar.xz \
+            --output "$archive"
+          # Verify the exact pinned Git blob, not just the archive's filename.
+          test "$(git hash-object "$archive")" = 5c01a4c3702d39c0ee88cb5ce23a7e310aab61d2
+          sudo tar -xJf "$archive" -C /
+          /opt/FriendlyARM/toolchain/11.3-aarch64/bin/aarch64-linux-gnu-gcc --version
+
+      - name: Build pinned pahole
+        run: |
+          cmake -S pahole-source -B pahole-build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/pahole-1.25" \
+            -D__LIB=lib -DBUILD_SHARED_LIBS=OFF -DLIBBPF_EMBEDDED=ON
+          cmake --build pahole-build --parallel "$(nproc)"
+          cmake --install pahole-build
+          test "$("$RUNNER_TEMP/pahole-1.25/bin/pahole" --version)" = v1.25
+          echo "$RUNNER_TEMP/pahole-1.25/bin" >> "$GITHUB_PATH"
+
+      - name: Build shadow vmlinux and extract external BTF
+        run: |
+          bash scripts/build-external-btf.sh \
+            "$GITHUB_WORKSPACE/kernel" \
+            /opt/FriendlyARM/toolchain/11.3-aarch64/bin/aarch64-linux-gnu- \
+            "$GITHUB_WORKSPACE/artifact" \
+            2>&1 | tee "$RUNNER_TEMP/external-btf-build.log"
+
+      - name: Set up BTF consumer validation
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache-dependency-path: btf/verify/go.sum
+
+      - name: Decode BTF with dae's cilium version
+        working-directory: btf/verify
+        run: |
+          go run -mod=readonly . ../../artifact/vmlinux-6.6.134+ \
+            | tee ../../artifact/validation.txt
+
+      - name: Finalize provenance and checksums
+        run: |
+          cp btf/szr-6.6.134+.json artifact/source-provenance.json
+          cd artifact
+          find . -maxdepth 1 -type f ! -name SHA256SUMS -print0 \
+            | sort -z | xargs -0 sha256sum > SHA256SUMS
+          sha256sum --check SHA256SUMS
+          {
+            echo '## External BTF for szr — 6.6.134+'
+            echo 'Pinned FriendlyARM source and GCC 11.3; runtime kernel configuration preserved except reduced debug information.'
+            echo 'The artifact contains BTF and provenance only; no boot image or replacement modules.'
+            echo '**Not installed or load-tested on the router.**'
+            echo '```text'
+            cat validation.txt
+            cat SHA256SUMS
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload external BTF
+        uses: actions/upload-artifact@v4
+        with:
+          name: external-btf-szr-6.6.134-plus
+          path: artifact/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: external-btf-diagnostics-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/external-btf-build.log
+            btf-build/.config
+            btf-build/include/config/kernel.release
+            artifact/
+          if-no-files-found: ignore
+          include-hidden-files: true
+          retention-days: 7
