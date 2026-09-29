@@ -74,7 +74,7 @@ jobs:
           test -z "$(find bin/packages -type f -name 'dae-official*.ipk' -print -quit)"
           mapfile -d '' apks < <(find bin/packages -type f -name 'dae-official*.apk' -print0)
           test "${#apks[@]}" -eq 1
-          [[ "$(basename "${apks[0]}")" == dae-official-2.1.1-r1*.apk ]]
+          [[ "$(basename "${apks[0]}")" == dae-official-2.1.1-r2*.apk ]]
           printf '%s  %s\n' bd84b6770cb335b8a45d8b1e16a95f68cf940b3edaaeeb449c187ce4b1058d0b \
             "$SDK_DIR/dl/dae-linux-arm64.tar.xz" | sha256sum --check
           apk_tool="$SDK_DIR/staging_dir/host/bin/apk"
@@ -106,7 +106,7 @@ jobs:
                       if record.get('name') == 'dae-official']
           assert len(packages) == 1, f'Expected one dae-official metadata record, got {len(packages)}'
           package = packages[0]
-          assert package.get('version') == '2.1.1-r1', package
+          assert package.get('version') == '2.1.1-r2', package
           assert package.get('arch') == 'aarch64_generic', package
           dependencies = package.get('depends')
           assert dependencies is not None, package
@@ -179,7 +179,7 @@ jobs:
 
       - name: Record provenance and artifact checksums
         run: |
-          apks=(artifact/dae-official-2.1.1-r1*.apk)
+          apks=(artifact/dae-official-2.1.1-r2*.apk)
           test "${#apks[@]}" -eq 1
           test -f "${apks[0]}"
           {
@@ -200,7 +200,7 @@ jobs:
           (cd artifact && sha256sum "${apks[0]#artifact/}" build-info.txt package-metadata.json payload-manifest.txt > SHA256SUMS)
           (cd artifact && sha256sum --check SHA256SUMS)
           {
-            echo '## dae-official 2.1.1-r1 (OpenWrt 25.12.4 rockchip/armv8)'
+            echo '## dae-official 2.1.1-r2 (OpenWrt 25.12.4 rockchip/armv8)'
             echo 'Host-only APK build and example configuration validation; **not installed or run as a service**.'
             echo '```text'
             cat artifact/build-info.txt artifact/SHA256SUMS

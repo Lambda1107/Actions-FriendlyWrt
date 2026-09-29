@@ -27,7 +27,7 @@ dns {
     # Separate from dnsmasq :53 and mihomo :5335. Client requests addressed
     # to the router's own UDP/53 socket are NOT automatically taken by dae:
     # arrange a deliberate DNS handoff before enabling the LAN binding.
-    bind: '127.0.0.1:5336'
+    bind: 'tcp+udp://127.0.0.1:5336'
     upstream {
         cn_dns: 'udp://192.168.1.1:53'
         remote_dns: 'https://8.8.8.8/dns-query'
