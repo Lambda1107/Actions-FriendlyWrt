@@ -1,0 +1,48 @@
+# Example only. The package does not install /etc/dae/config.dae or enable service.
+# Copy this file to config.dae (mode 0600) only after adapting the DNS path.
+# Preserve WireGuard management: never bind wg_aliyun or the router's WAN.
+# Replace the temporary BTF symlink into /tmp with a persistent matching BTF
+# before considering daemon autostart.
+global {
+    # Enable only for a controlled LAN cutover with a timed rollback:
+    # lan_interface: br-lan
+    # Do not set wan_interface: auto (would intercept router-local egress).
+    auto_config_kernel_parameter: false
+    so_mark_from_dae: 0
+    bootstrap_resolver: '223.5.5.5:53'
+    log_level: info
+}
+
+node {
+    mihomo: 'socks5://127.0.0.1:7890'
+}
+group {
+    via_mihomo {
+        filter: name(mihomo)
+        policy: fixed(0)
+    }
+}
+
+dns {
+    # Separate from dnsmasq :53 and mihomo :5335. Client requests addressed
+    # to the router's own UDP/53 socket are NOT automatically taken by dae:
+    # arrange a deliberate DNS handoff before enabling the LAN binding.
+    bind: '127.0.0.1:5336'
+    upstream {
+        cn_dns: 'udp://192.168.1.1:53'
+        remote_dns: 'https://8.8.8.8/dns-query'
+    }
+    routing {
+        request {
+            qname(geosite:cn) -> cn_dns
+            fallback: remote_dns
+        }
+    }
+}
+
+routing {
+    dip(geoip:private) -> direct
+    domain(geosite:cn) -> direct
+    dip(geoip:cn) -> direct
+    fallback: via_mihomo
+}

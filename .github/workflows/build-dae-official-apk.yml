@@ -1,0 +1,223 @@
+name: Build official dae APK (OpenWrt 25.12.4)
+
+# Host-only SDK package build. Never runs dae as a service or contacts a router.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build_apk:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    env:
+      SDK_ARCHIVE: openwrt-sdk-25.12.4-rockchip-armv8_gcc-14.3.0_musl.Linux-x86_64.tar.zst
+      SDK_SHA256: 079abc12bb3d947493293ee000b3b5cc13979b8bb2104f1de8eeb1051e5dffb5
+      PACKAGES_FEED_COMMIT: f91b06b3faff7ad3c8cbeb1ab39cef680d2f28ed
+      DAE_BINARY_SHA256: 3fc8198a1cdd7323992fc2b31cdd8742df98014fb9a6dfa8581bb8a2ec5fad50
+    steps:
+      - name: Checkout package recipe
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install SDK and ARM64 validation prerequisites
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential file gawk gettext git libncurses-dev libssl-dev \
+            python3 qemu-user-static rsync unzip zstd
+
+      - name: Download and verify pinned OpenWrt SDK
+        run: |
+          archive="$RUNNER_TEMP/$SDK_ARCHIVE"
+          curl --fail --location --retry 3 \
+            "https://downloads.openwrt.org/releases/25.12.4/targets/rockchip/armv8/$SDK_ARCHIVE" \
+            --output "$archive"
+          printf '%s  %s\n' "$SDK_SHA256" "$archive" | sha256sum --check
+          tar --zstd -xf "$archive" -C "$RUNNER_TEMP"
+          sdk="$RUNNER_TEMP/${SDK_ARCHIVE%.tar.zst}"
+          test -x "$sdk/scripts/feeds"
+          test -x "$sdk/staging_dir/host/bin/apk"
+          echo "SDK_DIR=$sdk" >> "$GITHUB_ENV"
+
+      - name: Register pinned geodata package definitions
+        run: |
+          cd "$SDK_DIR"
+          # Metadata for runtime dependencies; do not build or bundle the data packages.
+          printf 'src-git packages https://github.com/openwrt/packages.git^%s\n' \
+            "$PACKAGES_FEED_COMMIT" > feeds.conf
+          ./scripts/feeds update packages
+          test "$(git -C feeds/packages rev-parse HEAD)" = "$PACKAGES_FEED_COMMIT"
+          ./scripts/feeds install v2ray-geoip v2ray-geosite
+          test -f package/feeds/packages/v2ray-geodata/Makefile
+          cp -a "$GITHUB_WORKSPACE/package/dae-official" package/
+          printf '\nCONFIG_PACKAGE_dae-official=y\n' >> .config
+          make defconfig
+          grep -qx 'CONFIG_USE_APK=y' .config
+          grep -qx 'CONFIG_PACKAGE_dae-official=y' .config
+
+      - name: Build only dae-official with the SDK
+        run: |
+          cd "$SDK_DIR"
+          make package/dae-official/compile V=s \
+            2>&1 | tee "$RUNNER_TEMP/dae-official-build.log"
+
+      - name: Inspect APK metadata and payload
+        run: |
+          cd "$SDK_DIR"
+          mkdir -p "$GITHUB_WORKSPACE/artifact" "$RUNNER_TEMP/dae-root"
+          test -z "$(find bin/packages -type f -name 'dae-official*.ipk' -print -quit)"
+          mapfile -d '' apks < <(find bin/packages -type f -name 'dae-official*.apk' -print0)
+          test "${#apks[@]}" -eq 1
+          [[ "$(basename "${apks[0]}")" == dae-official-2.1.1-r1*.apk ]]
+          printf '%s  %s\n' bd84b6770cb335b8a45d8b1e16a95f68cf940b3edaaeeb449c187ce4b1058d0b \
+            "$SDK_DIR/dl/dae-linux-arm64.tar.xz" | sha256sum --check
+          apk_tool="$SDK_DIR/staging_dir/host/bin/apk"
+          "$apk_tool" adbdump --format json "${apks[0]}" \
+            > "$GITHUB_WORKSPACE/artifact/package-metadata.json"
+          "$apk_tool" extract --no-chown --destination "$RUNNER_TEMP/dae-root" "${apks[0]}"
+          python3 - "$GITHUB_WORKSPACE/artifact/package-metadata.json" "$RUNNER_TEMP/dae-root" <<'PY'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import re
+          import sys
+
+          metadata = json.loads(pathlib.Path(sys.argv[1]).read_text())
+
+          def records(value):
+              if isinstance(value, dict):
+                  yield value
+                  for child in value.values():
+                      yield from records(child)
+              elif isinstance(value, list):
+                  for child in value:
+                      yield from records(child)
+
+          packages = [record for record in records(metadata)
+                      if record.get('name') == 'dae-official']
+          assert len(packages) == 1, f'Expected one dae-official metadata record, got {len(packages)}'
+          package = packages[0]
+          assert package.get('version') == '2.1.1-r1', package
+          assert package.get('arch') == 'aarch64_generic', package
+          dependencies = package.get('depends')
+          assert dependencies is not None, package
+          def dependency_strings(value):
+              if isinstance(value, str):
+                  yield value
+              elif isinstance(value, dict):
+                  for child in value.values():
+                      yield from dependency_strings(child)
+              elif isinstance(value, list):
+                  for child in value:
+                      yield from dependency_strings(child)
+
+          dependency_names = {match.group(1) for text in dependency_strings(dependencies)
+                              if (match := re.fullmatch(r'(v2ray-geo(?:ip|site))(?:[<>=~].*)?', text))}
+          assert dependency_names == {'v2ray-geoip', 'v2ray-geosite'}, dependencies
+
+          root = pathlib.Path(sys.argv[2])
+          for name in ('usr/bin/dae', 'etc/init.d/dae', 'etc/config/dae', 'etc/dae/example.dae'):
+              assert (root / name).is_file(), f'Missing payload file: /{name}'
+          assert not (root / 'etc/dae/config.dae').exists(), 'Active configuration must not be shipped'
+          assert not (root / 'usr/share/v2ray/geoip.dat').exists(), 'GeoIP must come from its dependency'
+          assert not (root / 'usr/share/v2ray/geosite.dat').exists(), 'Geosite must come from its dependency'
+          binary = root / 'usr/bin/dae'
+          expected = os.environ['DAE_BINARY_SHA256']
+          assert hashlib.sha256(binary.read_bytes()).hexdigest() == expected, 'Not the official ARM64 binary'
+          config = (root / 'etc/config/dae').read_text()
+          assert re.search(r'^\s*option\s+enabled\s+[\'\"]?0[\'\"]?\s*$', config, re.M), 'Service must be disabled by default'
+          assert not re.search(r'^\s*option\s+enabled\s+[\'\"]?1[\'\"]?\s*$', config, re.M), 'Service enabled'
+          assert re.search(r'^\s*option\s+config_file\s+[\'\"]?/etc/dae/config\.dae[\'\"]?\s*$', config, re.M), 'Unexpected active config path'
+          init = (root / 'etc/init.d/dae').read_text()
+          gate = re.search(r'config_get_bool\s+enabled\s+config\s+enabled\s+0\s*\n\s*\[\s*"\$enabled"\s*-eq\s*1\s*\]\s*\|\|\s*return\s+0', init)
+          assert gate and gate.end() < init.index('procd_open_instance'), 'Disabled service must return before opening a procd instance'
+          print('Verified APK name, version, architecture, runtime dependencies, payload and disabled state')
+          PY
+          file "$RUNNER_TEMP/dae-root/usr/bin/dae"
+          file "$RUNNER_TEMP/dae-root/usr/bin/dae" | grep -q 'ELF 64-bit.*ARM aarch64'
+          cp "${apks[0]}" "$GITHUB_WORKSPACE/artifact/"
+          (cd "$RUNNER_TEMP/dae-root" && find . -type f,l -print | sort) \
+            > "$GITHUB_WORKSPACE/artifact/payload-manifest.txt"
+
+      - name: Validate example against official OpenWrt geodata
+        run: |
+          # Signed OpenWrt 25.12.4 feed packages, used on the runner only.
+          # They are NOT included in the dae-official artifact; apk installs them as dependencies.
+          datasets="$RUNNER_TEMP/dae-geodata"
+          mkdir -p "$datasets"
+          base='https://downloads.openwrt.org/releases/25.12.4/packages/aarch64_generic/packages'
+          geoip="$RUNNER_TEMP/v2ray-geoip-202607171233-r1.apk"
+          geosite="$RUNNER_TEMP/v2ray-geosite-20260726062913-r1.apk"
+          curl --fail --location --retry 3 "$base/${geoip##*/}" --output "$geoip"
+          curl --fail --location --retry 3 "$base/${geosite##*/}" --output "$geosite"
+          printf '%s  %s\n' \
+            4fba8d3638acfa190e2ee992d6be9178dd166dc5cef56e3ae80f9a9cdcf67037 "$geoip" \
+            dc129f5f7e210734f0f2a58a68faa3ec219808d3c4d6b6e9eb8837f60cf0fbcb "$geosite" \
+            | sha256sum --check
+          "$SDK_DIR/staging_dir/host/bin/apk" extract --no-chown --destination "$datasets" "$geoip" "$geosite"
+          test -s "$datasets/usr/share/v2ray/geoip.dat"
+          test -s "$datasets/usr/share/v2ray/geosite.dat"
+          example="$RUNNER_TEMP/dae-example.dae"
+          cp "$RUNNER_TEMP/dae-root/etc/dae/example.dae" "$example"
+          chmod 0600 "$example"
+          DAE_LOCATION_ASSET="$datasets/usr/share/v2ray" \
+            timeout 90s qemu-aarch64-static -L "$SDK_DIR/staging_dir/target-aarch64_generic_musl" \
+            "$RUNNER_TEMP/dae-root/usr/bin/dae" validate -c "$example" \
+            2>&1 | tee "$RUNNER_TEMP/dae-validation.log"
+
+      - name: Record provenance and artifact checksums
+        run: |
+          apks=(artifact/dae-official-2.1.1-r1*.apk)
+          test "${#apks[@]}" -eq 1
+          test -f "${apks[0]}"
+          {
+            echo "package: ${apks[0]#artifact/}"
+            echo 'target: OpenWrt 25.12.4 rockchip/armv8 aarch64_generic (APK)'
+            echo "source-commit: $GITHUB_SHA"
+            echo "sdk: $SDK_ARCHIVE"
+            echo "sdk-sha256: $SDK_SHA256"
+            echo 'upstream-dae: https://github.com/daeuniverse/dae/releases/download/v2.1.1/dae-linux-arm64.tar.xz'
+            echo 'upstream-dae-archive-sha256: bd84b6770cb335b8a45d8b1e16a95f68cf940b3edaaeeb449c187ce4b1058d0b'
+            echo "packaged-usr/bin/dae-sha256: $DAE_BINARY_SHA256"
+            echo "openwrt-packages-feed-commit: $PACKAGES_FEED_COMMIT"
+            echo 'geoip-validation-apk-sha256: 4fba8d3638acfa190e2ee992d6be9178dd166dc5cef56e3ae80f9a9cdcf67037'
+            echo 'geosite-validation-apk-sha256: dc129f5f7e210734f0f2a58a68faa3ec219808d3c4d6b6e9eb8837f60cf0fbcb'
+            echo 'sample-validation: qemu-aarch64-static dae validate -c (OpenWrt dependency data; no service started)'
+            echo 'deployment: not installed or run on a router; configure persistent BTF before enabling dae'
+          } > artifact/build-info.txt
+          (cd artifact && sha256sum "${apks[0]#artifact/}" build-info.txt package-metadata.json payload-manifest.txt > SHA256SUMS)
+          (cd artifact && sha256sum --check SHA256SUMS)
+          {
+            echo '## dae-official 2.1.1-r1 (OpenWrt 25.12.4 rockchip/armv8)'
+            echo 'Host-only APK build and example configuration validation; **not installed or run as a service**.'
+            echo '```text'
+            cat artifact/build-info.txt artifact/SHA256SUMS
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload verified APK and build information
+        uses: actions/upload-artifact@v4
+        with:
+          name: dae-official-2.1.1-openwrt-25.12.4-rockchip-armv8
+          path: artifact/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dae-official-apk-diagnostics-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/dae-official-build.log
+            ${{ runner.temp }}/dae-validation.log
+            artifact/package-metadata.json
+            artifact/payload-manifest.txt
+          if-no-files-found: ignore
+          retention-days: 7
