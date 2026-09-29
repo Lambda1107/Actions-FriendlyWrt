@@ -24,18 +24,32 @@ group {
 }
 
 dns {
-    # Separate from dnsmasq :53 and mihomo :5335. Client requests addressed
-    # to the router's own UDP/53 socket are NOT automatically taken by dae:
-    # arrange a deliberate DNS handoff before enabling the LAN binding.
+    # This is dae's real-IP DNS. The LAN 53 handoff is configured separately
+    # by the operator; do not bind to dnsmasq :53 or mihomo :5335 here.
     bind: 'tcp+udp://127.0.0.1:5336'
     upstream {
+        # Keep dnsmasq for local lease names; this does not change its upstream.
+        # Do not point dnsmasq upstream back to dae, which would create a loop.
+        lan_dns: 'tcp+udp://127.0.0.1:53'
         cn_dns: 'udp://192.168.1.1:53'
-        remote_dns: 'https://8.8.8.8/dns-query'
+        google: 'https://8.8.8.8/dns-query'
+        cloudflare: 'https://1.1.1.1/dns-query'
+        quad9: 'https://9.9.9.11/dns-query'
     }
     routing {
         request {
-            qname(geosite:cn) -> cn_dns
-            fallback: remote_dns
+            # As with mihomo dns.ipv6: false, answer AAAA with empty NOERROR.
+            qtype(aaaa) -> reject
+            qname(suffix: lan, suffix: local) -> lan_dns
+            qname(geosite:cn, geosite:private) -> cn_dns
+            fallback: google
+        }
+        response {
+            # These two are answer-based retries, NOT timeout failover or
+            # parallel/fastest selection across the three DoH upstreams.
+            upstream(google) && ip(geoip:private) -> cloudflare
+            upstream(cloudflare) && ip(geoip:private) -> quad9
+            fallback: accept
         }
     }
 }

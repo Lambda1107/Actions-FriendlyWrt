@@ -28,11 +28,11 @@
 
 ### 构建官方 dae 的 OpenWrt APK
 
-在 Actions 中手动运行 **Build official dae APK (OpenWrt 25.12.4)**（`build-dae-official-apk.yml`）。目标是 NanoPi R2S 的 `rockchip/armv8`、`aarch64_generic`；它使用官方 dae v2.1.1 ARM64 静态二进制及固定哈希，在匹配版本的 OpenWrt SDK 中构建 `dae-official-2.1.1-r2` APK，不编译新的 dae 核心、内核或模块，也不连接路由器。
+在 Actions 中手动运行 **Build official dae APK (OpenWrt 25.12.4)**（`build-dae-official-apk.yml`）。目标是 NanoPi R2S 的 `rockchip/armv8`、`aarch64_generic`；它使用官方 dae v2.1.1 ARM64 静态二进制及固定哈希，在匹配版本的 OpenWrt SDK 中构建 `dae-official-2.1.1-r3` APK，不编译新的 dae 核心、内核或模块，也不连接路由器。
 
 - APK 声明依赖 OpenWrt 官方 `v2ray-geoip`、`v2ray-geosite`，从 `/usr/share/v2ray` 加载两份 `.dat`；不捆绑重复、易过期的数据文件。外置 BTF 仍需单独、持久地放在 `/usr/lib/debug/boot/vmlinux-6.6.134+`。
 - 包拥有 `/usr/bin/dae`、`/etc/init.d/dae`、`/etc/config/dae` 和 `/etc/dae/example.dae`；**不附带**可直接运行的 `/etc/dae/config.dae`，也不自动绑定任何网络接口。示例中的 LAN 绑定已注释，使用前需要检查 DNS 入口与 WireGuard 回滚路径。
-- r2 示例明确使用 `tcp+udp://127.0.0.1:5336`：仅写 `127.0.0.1:5336` 时 dae v2.1.1 **只监听 UDP**。已经从 r1 示例复制出的 `/etc/dae/config.dae` 不属于 APK 管理，升级包不会修改它；切换客户端 DNS 前须由管理员单独改为 TCP+UDP、重新校验并确认 TCP 查询可用。
+- r3 示例使用 `tcp+udp://127.0.0.1:5336`，提供三个 DoH：Google 为默认，Cloudflare/Quad9 仅在前一上游返回可疑私网 IP 时依次重查，不支持自动超时切换、并发择优或香港 ECS 覆盖。private 域名走国内上游，`.lan`/`.local` 单独交给未回指 dae 的 dnsmasq，AAAA 请求回复空 NOERROR；不迁移 mihomo 的 hosts 与 fake-IP。已从旧版示例复制出的 `/etc/dae/config.dae` 不属于 APK 管理，升级包不会修改它，须由管理员手动审查并更新。
 - OpenWrt 的通用安装钩子可能注册 `/etc/rc.d` 服务链接并调用 `start`；但 UCI 默认 `enabled=0`，init 脚本会在打开 procd 实例之前退出。实际启用还要求 root 所有、0600 的 `/etc/dae/config.dae`、有效的持久 BTF 与两份 Geo 数据，并先运行 `dae validate`。
 - 产物来自用户 fork 的 Actions，不是 OpenWrt 官方签名软件源。安装 APK 和任何路由器写操作由使用者执行；核对 Actions 产物 `SHA256SUMS`，不要用自动安装脚本绕过签名检查或自动拉取不匹配运行内核的 kmod。
 
